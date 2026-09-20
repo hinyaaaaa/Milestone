@@ -1,0 +1,135 @@
+/* ============================================================
+   liquid-glass.css — Liquid Glass ビジュアル言語 (v2)
+   ------------------------------------------------------------
+   【v1からの反省点への対応】
+   自己採点で指摘した「backdrop-filterを宣言しただけで、透ける対象が
+   静止した平坦なグラデーションしかなく、ガラス感がほぼ出ていない」
+   という問題への対応。ガラスは「背後に動き・色の変化がある」ことで
+   初めて存在感が出る。したがって:
+     1. 背景(bg-layer側)にゆっくり動くメッシュグラデーションを追加し、
+        blurの対象そのものに常時変化を持たせる
+     2. backdrop-filterにsaturate()を足し、素通しではなく「色が
+        濃縮されて透ける」Apple Liquid Glass特有の質感に寄せる
+     3. カード上端に一本、動く光の反射(specular highlight)を追加し、
+        「ガラスの表面に光が当たっている」という物理的説得力を足す
+     4. 縁取りの色分けだけだった階層表現を、影の深さ・不透明度・
+        バッジの有無を含めた複合的な階層表現に変更する
+
+   パフォーマンス方針は維持(Surface Go 4基準、DESIGN_CONSTRAINTS.md 12節):
+   - content-visibility:auto でオフスクリーンの描画コストを下げる方針は
+     維持しつつ、blur半径・アニメーションの重さは新規追加分を含めて
+     再度低負荷に留める(背景アニメーションはtransformのみで、
+     re-layoutを発生させない)。
+   - prefers-reduced-motionでは背景アニメーション・カードの脈動・
+     光の反射アニメーションを全て停止する。
+   ============================================================ */
+
+:root {
+  --glass-bg: rgba(255,255,255,0.07);
+  --glass-bg-strong: rgba(255,255,255,0.12);
+  --glass-border: rgba(255,255,255,0.16);
+  --glass-blur: 20px;
+  --glass-saturate: 1.6;
+  --theme: #e7b94c; /* カード単位で上書きされる既定値 */
+}
+
+.glass-pill {
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  color: #f4f1ea;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, transform .1s;
+}
+.glass-pill:hover { background: rgba(255,255,255,0.16); }
+.glass-pill:active { transform: scale(.96); }
+.glass-pill.active {
+  border-color: color-mix(in srgb, var(--theme) 65%, transparent);
+  background: color-mix(in srgb, var(--theme) 22%, transparent);
+  color: var(--theme);
+}
+/* Windows等マウス操作環境向けのフォーカスリング。iPhoneのタップでは
+   実質見えないが、キーボード操作・マウスクリック双方に対応させる。 */
+.glass-pill:focus-visible {
+  outline: 2px solid var(--theme);
+  outline-offset: 2px;
+}
+
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  overflow: hidden;
+  content-visibility: auto;
+  contain-intrinsic-size: 340px;
+  box-shadow: 0 10px 30px -12px rgba(0,0,0,.55);
+  transition: transform .18s cubic-bezier(.2,.8,.3,1), box-shadow .18s, border-color .3s;
+  position: relative;
+  isolation: isolate;
+}
+/* 縁の光沢(グラデーション枠線) */
+.glass-card::before {
+  content: '';
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--theme) 60%, white 20%), transparent 55%, color-mix(in srgb, var(--theme) 30%, transparent) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 2;
+}
+/* 表面反射(specular highlight): カード上部を斜めに横切る、ゆっくり
+   明滅する光の帯。「ガラスの表面に光源が当たっている」質感の核。 */
+.glass-card::after {
+  content: '';
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,.10) 45%, rgba(255,255,255,.16) 50%, rgba(255,255,255,.10) 55%, transparent 70%);
+  background-size: 220% 220%;
+  animation: glass-sheen 9s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 1;
+  mix-blend-mode: overlay;
+}
+@keyframes glass-sheen {
+  0%   { background-position: 120% 0%; }
+  50%  { background-position: -20% 100%; }
+  100% { background-position: 120% 0%; }
+}
+.glass-card:hover { transform: translateY(-3px); box-shadow: 0 18px 40px -14px rgba(0,0,0,.65); }
+.glass-card:focus-within { outline: 2px solid var(--theme); outline-offset: 2px; }
+
+/* ── 階層表現(v2で複合化) ──────────────────────────────
+   縁の色だけでなく、「浮き上がって見える度合い」自体を変える。
+   達成直後・もうすぐ到達のカードは影を強く/近くに落として物理的に
+   手前にあるように見せ、視線が自然にそこへ集まるようにする。 */
+.card-achieved-48h {
+  border-color: color-mix(in srgb, var(--theme) 50%, var(--glass-border));
+}
+.card-achieved-24h {
+  border-color: var(--theme);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme) 55%, transparent),
+              0 20px 46px -14px rgba(0,0,0,.7),
+              0 0 32px -6px color-mix(in srgb, var(--theme) 35%, transparent);
+  transform: translateY(-1px);
+}
+.card-soon {
+  animation: soon-pulse 2.8s ease-in-out infinite;
+}
+@keyframes soon-pulse {
+  0%, 100% { box-shadow: 0 10px 30px -12px rgba(0,0,0,.55); }
+  50% { box-shadow: 0 10px 30px -12px rgba(0,0,0,.55), 0 0 22px -2px color-mix(in srgb, var(--theme) 60%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-soon { animation: none; }
+  .glass-card { transition: none; }
+  .glass-card::after { animation: none; }
+}

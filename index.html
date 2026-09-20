@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+
+<!-- ── iPhoneホーム画面追加(PWA standalone)対応 ──────────────────
+     自己採点で「アイコンが無い」「manifestが無い」ことを指摘したため、
+     この一式を新規追加した。apple-mobile-web-app-*系はiOS Safari固有の
+     古い仕組みだが、manifest.jsonのdisplay:standaloneだけではiOSの
+     ホーム画面追加時にステータスバーの見た目やアイコンが期待通りに
+     ならないことがあるため、両対応で入れておく(実機での動作実績が
+     広いため、こちらを優先的に信頼する)。 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Milestone">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+<!-- ── Windows/Android等、標準のWeb App Manifestルート ──────────
+     Windows(Edge)は「アプリのインストール」機能でこのmanifestを
+     読み、スタートメニューにアイコン付きで登録できる。 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#08080e">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+
+<title>Milestone Monitor — 3ch再生数モニター</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="liquid-glass.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 背景: 動くメッシュグラデーション(liquid-glass.cssのbackdrop-filterが
+     透かす対象。自己採点で「ガラス感が出ていない」と指摘した箇所への
+     対応、詳細はstyle.css冒頭コメント参照) -->
+<div id="bg-layer">
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+  <div class="blob blob-3"></div>
+</div>
+
+<header id="app-header">
+  <div id="header-title-row">
+    <h1 id="app-title">
+      <svg class="logo-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M3 16l4-4 3 2 5-7 6 4" stroke="#e7b94c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="21" cy="11" r="2" fill="#fff3d6"/>
+      </svg>
+      Milestone Monitor
+    </h1>
+    <button id="refresh-btn" class="glass-pill" title="自動更新: OFF(クリックでON)" aria-label="自動更新の切り替え">⟳</button>
+  </div>
+  <div id="header-controls-row">
+    <div id="channel-tabs" role="tablist" aria-label="チャンネルで絞り込み"></div>
+    <select id="sort-select" class="glass-pill" aria-label="並び替え">
+      <option value="featured">注目順</option>
+      <option value="views">再生数順</option>
+      <option value="momentum">勢い順</option>
+      <option value="date">投稿日順</option>
+    </select>
+  </div>
+  <div id="last-updated">最終更新: —</div>
+</header>
+
+<main id="card-grid"></main>
+
+<div id="empty-state" hidden>読み込み中…</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

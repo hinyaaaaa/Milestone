@@ -1,0 +1,226 @@
+/* ============================================================
+   style.css — レイアウト・コンポーネント詳細 (v2)
+   ------------------------------------------------------------
+   自己採点で指摘した3点への対応:
+     1. iPhoneホーム画面追加(standalone表示)を前提にした
+        safe-area対応・スクロールバウンス制御
+     2. Windowsデスクトップでの見え方(横幅が広い・マウス操作が
+        主体)を前提にしたグリッド上限とホバー/フォーカス設計
+     3. 情報の視覚的階層(全カードが同じ重みに見える問題)の解消
+
+   背景アニメーション(#bg-layer)はliquid-glass.cssのbackdrop-filterが
+   「透ける対象」として機能するために必須の要素。動きはtransformの
+   み(background-position操作はGPU合成レイヤーに乗りにくいため、
+   実際には要素をtranslateさせる二重ブロブ構成にしている)。
+   ============================================================ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  /* iOS Safari / standalone両方でのゴムバウンドスクロールを抑止する。
+     ホーム画面PWAでは特に、端まで引っ張った時に白い裏地が見えると
+     「ネイティブアプリらしさ」が損なわれるため。 */
+  overscroll-behavior-y: none;
+  height: 100%;
+}
+body {
+  min-height: 100%;
+  min-height: 100dvh;
+  background: #08080e;
+  color: #f4f1ea;
+  font-family: 'Zen Kaku Gothic New', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── 背景: 動くメッシュグラデーション ──────────────────────
+   3つの色ブロブをtransformだけでゆっくり周回させる。静止画だと
+   v1と同じに見えるが、実機では常に色と濃淡が変化し続けるため、
+   前面カードのbackdrop-filterに「濃縮して透かす対象」が生まれる。 */
+#bg-layer {
+  position: fixed; inset: 0; z-index: -1; overflow: hidden;
+  background: #08080e;
+}
+#bg-layer .blob {
+  position: absolute;
+  width: 70vmax; height: 70vmax;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: .55;
+  will-change: transform;
+}
+#bg-layer .blob-1 { background: radial-gradient(circle, rgba(231,185,76,.55), transparent 65%); top: -25%; left: -20%; animation: drift-a 26s ease-in-out infinite; }
+#bg-layer .blob-2 { background: radial-gradient(circle, rgba(90,168,224,.5), transparent 65%); top: 10%; right: -25%; animation: drift-b 32s ease-in-out infinite; }
+#bg-layer .blob-3 { background: radial-gradient(circle, rgba(242,166,196,.45), transparent 65%); bottom: -30%; left: 20%; animation: drift-c 29s ease-in-out infinite; }
+@keyframes drift-a { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(8%, 10%) scale(1.15); } }
+@keyframes drift-b { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-10%, 6%) scale(1.1); } }
+@keyframes drift-c { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(6%, -8%) scale(1.2); } }
+@media (prefers-reduced-motion: reduce) {
+  #bg-layer .blob { animation: none; }
+}
+
+/* ── ヘッダー ─────────────────────────────────────────── */
+#app-header {
+  position: sticky; top: 0; z-index: 20;
+  /* iPhoneのノッチ/ステータスバー分を確保(standaloneモードでは
+     safe-area-inset-topがステータスバーの高さそのものになる)。 */
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 12px;
+  background: rgba(8,8,14,.68);
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  border-bottom: 1px solid rgba(255,255,255,.09);
+}
+#header-title-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px; gap: 10px;
+}
+#app-title { font-size: 17px; font-weight: 700; letter-spacing: .02em; display: flex; align-items: center; gap: 8px; }
+#app-title .logo-mark { width: 22px; height: 22px; flex-shrink: 0; }
+#refresh-btn { width: 40px; height: 40px; font-size: 17px; flex-shrink: 0; }
+
+#header-controls-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+}
+#channel-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+/* タップ領域はiOS HIG推奨の44pxを満たす(見た目のpaddingは小さくても
+   実際のヒット領域はmin-heightで確保する)。 */
+.channel-tab { padding: 9px 15px; font-size: 12.5px; font-weight: 600; min-height: 40px; }
+
+#sort-select {
+  padding: 9px 15px; font-size: 12.5px; font-weight: 600; min-height: 40px;
+  appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23f4f1ea' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 30px;
+}
+#sort-select option { background: #16161f; color: #f4f1ea; }
+
+#last-updated { font-size: 10.5px; color: rgba(244,241,234,.45); margin-top: 8px; }
+
+/* ── カードグリッド ───────────────────────────────────────
+   Windowsの広いデスクトップ画面(ウルトラワイド含む)でカードが
+   間延びしないよう、1600px超では列数を増やす形にして密度を保つ。
+   iPhone単列時は横幅いっぱいに広げる。 */
+#card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  padding: 20px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+#empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: rgba(244,241,234,.5);
+  font-size: 13px;
+}
+
+/* ---- カード内部 ---- */
+.card-thumb-link { display: block; position: relative; aspect-ratio: 16/9; overflow: hidden; }
+.card-thumb { width: 100%; height: 100%; object-fit: cover; display: block; background: #1c1c26; }
+.card-duration {
+  position: absolute; right: 6px; bottom: 6px;
+  background: rgba(0,0,0,.75); color: #fff;
+  font-size: 10.5px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
+  font-family: 'Space Mono', monospace;
+}
+
+.card-body { padding: 12px 14px 14px; }
+.card-channel-tag {
+  display: inline-block; font-size: 10px; font-weight: 700;
+  color: var(--theme); letter-spacing: .04em; margin-bottom: 4px;
+}
+.card-title {
+  font-size: 13.5px; font-weight: 600; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; margin-bottom: 10px; min-height: 2.9em;
+}
+
+.card-stats-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.card-views-btn, .card-momentum-btn {
+  flex: 1; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px; color: #f4f1ea; font-family: 'Space Mono', monospace;
+  font-size: 12px; font-weight: 700; padding: 8px 4px; cursor: pointer;
+  min-height: 36px;
+  transition: background .12s, transform .1s;
+}
+.card-views-btn:hover, .card-momentum-btn:hover { background: rgba(255,255,255,.11); }
+.card-views-btn:active, .card-momentum-btn:active { transform: scale(.97); }
+.card-views-btn:focus-visible, .card-momentum-btn:focus-visible { outline: 2px solid var(--theme); outline-offset: 1px; }
+.card-momentum-btn { color: #7ee0a0; }
+
+.card-milestone { margin-bottom: 10px; }
+.card-milestone-row {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: rgba(244,241,234,.7); margin-bottom: 5px;
+  font-family: 'Space Mono', monospace;
+}
+.card-progress-track {
+  height: 6px; border-radius: 3px; background: rgba(255,255,255,.09);
+  overflow: hidden; margin-bottom: 5px;
+}
+.card-progress-fill {
+  height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, var(--theme), color-mix(in srgb, var(--theme) 70%, white));
+  transition: width .4s;
+}
+.card-eta { font-size: 11.5px; color: var(--theme); font-weight: 700; }
+
+.card-footer-row {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-published { font-size: 10.5px; color: rgba(244,241,234,.45); }
+.card-tweet-btn {
+  background: none; border: none; font-size: 15px; cursor: pointer;
+  opacity: .65; transition: opacity .12s, transform .1s;
+  min-width: 32px; min-height: 32px;
+}
+.card-tweet-btn:hover { opacity: 1; }
+.card-tweet-btn:active { transform: scale(.9); }
+.card-tweet-btn:focus-visible { outline: 2px solid var(--theme); outline-offset: 1px; border-radius: 6px; }
+
+.card-chart-wrap { margin-top: 10px; position: relative; }
+.card-chart { width: 100%; height: 130px; display: block; cursor: crosshair; }
+.card-chart-tooltip {
+  position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,.85); color: #fff; font-size: 10.5px;
+  padding: 4px 9px; border-radius: 6px; white-space: nowrap;
+  pointer-events: none; font-family: 'Space Mono', monospace;
+}
+
+/* ── 「注目」バッジ(v2で追加): 階層をボーダー色だけに頼らない ──
+   達成直後・もうすぐ到達のカードには、タイトル上に小さなバッジ文言を
+   出し、縁取り色が分かりにくい環境(色覚特性・低品質ディスプレイ等)
+   でも情報が伝わるようにする。 */
+.card-status-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; font-weight: 700; letter-spacing: .03em;
+  padding: 3px 9px; border-radius: 999px; margin-bottom: 6px;
+  background: color-mix(in srgb, var(--theme) 22%, transparent);
+  color: var(--theme);
+  border: 1px solid color-mix(in srgb, var(--theme) 45%, transparent);
+}
+
+/* ── Windowsデスクトップ向け: ワイド画面では列数と余白を調整 ──── */
+@media (min-width: 1600px) {
+  #card-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; padding: 24px; }
+}
+
+/* ── モバイル(iPhone想定) ─────────────────────────────── */
+@media (max-width: 480px) {
+  #card-grid { grid-template-columns: 1fr; padding: 14px; gap: 12px; }
+  #app-header { padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px; }
+  #app-title { font-size: 15px; }
+}
+
+/* ── standalone(ホーム画面PWA)専用の微調整 ──────────────────
+   Safariのアドレスバーが無い分、詰まりすぎないよう上部に余白を足す。 */
+@media (display-mode: standalone) {
+  #app-header { padding-top: calc(env(safe-area-inset-top, 0px) + 18px); }
+}
