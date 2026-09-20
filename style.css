@@ -44,9 +44,11 @@ body {
 }
 #bg-layer .blob {
   position: absolute;
-  width: 70vmax; height: 70vmax;
+  width: 60vmax; height: 60vmax;
   border-radius: 50%;
-  filter: blur(60px);
+  /* 【性能】filter:blur(60px)は削除。radial-gradientが既に透明へ滑らかに
+     減衰するため見た目はほぼ変わらず、巨大要素へのblurによる毎フレームの
+     再ラスタライズコストだけが消える。 */
   opacity: .55;
   will-change: transform;
 }
@@ -56,7 +58,7 @@ body {
 @keyframes drift-a { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(8%, 10%) scale(1.15); } }
 @keyframes drift-b { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-10%, 6%) scale(1.1); } }
 @keyframes drift-c { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(6%, -8%) scale(1.2); } }
-@media (prefers-reduced-motion: reduce) {
+@media (prefers-reduced-motion: reduce), (max-width: 560px) {
   #bg-layer .blob { animation: none; }
 }
 
@@ -140,7 +142,7 @@ body {
   font-family: 'Space Mono', monospace;
 }
 
-.card-body { padding: 12px 14px 14px; }
+.card-body { padding: 10px 13px 11px; }
 .card-channel-tag {
   display: inline-block; font-size: 10px; font-weight: 700;
   color: var(--theme); letter-spacing: .04em; margin-bottom: 4px;
@@ -148,15 +150,15 @@ body {
 .card-title {
   font-size: 13.5px; font-weight: 600; line-height: 1.45;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; margin-bottom: 10px; min-height: 2.9em;
+  overflow: hidden; margin-bottom: 8px; min-height: 2.9em;
 }
 
-.card-stats-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.card-stats-row { display: flex; gap: 8px; margin-bottom: 8px; }
 .card-views-btn, .card-momentum-btn {
   flex: 1; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
   border-radius: 8px; color: #f4f1ea; font-family: 'Space Mono', monospace;
-  font-size: 12px; font-weight: 700; padding: 8px 4px; cursor: pointer;
-  min-height: 36px;
+  font-size: 12px; font-weight: 700; padding: 6px 4px; cursor: pointer;
+  min-height: 32px;
   transition: background .12s, transform .1s;
 }
 .card-views-btn:hover, .card-momentum-btn:hover { background: rgba(255,255,255,.11); }
@@ -164,7 +166,7 @@ body {
 .card-views-btn:focus-visible, .card-momentum-btn:focus-visible { outline: 2px solid var(--theme); outline-offset: 1px; }
 .card-momentum-btn { color: #7ee0a0; }
 
-.card-milestone { margin-bottom: 10px; }
+.card-milestone { margin-bottom: 6px; }
 .card-milestone-row {
   display: flex; justify-content: space-between;
   font-size: 11px; color: rgba(244,241,234,.7); margin-bottom: 5px;
@@ -244,10 +246,53 @@ body {
 }
 
 /* ── モバイル(iPhone想定) ─────────────────────────────── */
-@media (max-width: 480px) {
-  #card-grid { padding: 14px; }
-  #app-header { padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px; }
+@media (max-width: 560px) {
+  #card-grid { padding: 10px 12px; }
+  #app-header { padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px; }
   #app-title { font-size: 15px; }
+  /* ヘッダーを縦に詰める: タイトル行のマージン・更新ボタンを小さくし、
+     チャンネルタブとソートを横一列に収めて、一覧の表示領域を増やす。 */
+  #header-title-row { margin-bottom: 8px; }
+  #refresh-btn { width: 34px; height: 34px; font-size: 15px; }
+  #header-controls-row { flex-wrap: nowrap; gap: 6px; }
+  #channel-tabs { flex-wrap: nowrap; gap: 4px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+  #channel-tabs::-webkit-scrollbar { display: none; }
+  .channel-tab { padding: 6px 10px; font-size: 11.5px; min-height: 34px; white-space: nowrap; flex-shrink: 0; }
+  #sort-select { padding: 6px 24px 6px 10px; font-size: 11.5px; min-height: 34px; flex-shrink: 0; background-position: right 9px center; }
+  #last-updated { margin-top: 5px; }
+
+  /* 【iPhoneでカードが大きすぎる問題への対応】
+     縦積み(サムネ218px+本文247px=465px/枚)だと1画面に1.75枚しか入らず、
+     スクロール量ばかり増える。モバイルでは「サムネを左、情報を右」の
+     横並びにしてカード高さを半分以下に抑え、一覧性を上げる。
+     グラフを開いた時だけ下に広がる(.card-chart-wrapは全幅)。 */
+  .glass-card {
+    display: grid;
+    grid-template-columns: 116px 1fr;
+    grid-template-areas:
+      "thumb body"
+      "chart chart";
+    border-radius: 14px;
+  }
+  .card-thumb-link { grid-area: thumb; aspect-ratio: auto; height: 100%; min-height: 96px; }
+  .card-thumb { position: absolute; inset: 0; }
+  .card-body { grid-area: body; padding: 8px 10px 8px; min-width: 0; }
+  .card-title { font-size: 12.5px; margin-bottom: 6px; min-height: 0; -webkit-line-clamp: 2; }
+  .card-channel-tag { margin-bottom: 1px; }
+  .card-stats-row { margin-bottom: 6px; gap: 6px; }
+  .card-views-btn, .card-momentum-btn { font-size: 11px; padding: 4px 2px; min-height: 30px; }
+  .card-milestone { margin-bottom: 4px; }
+  .card-milestone-row { font-size: 10px; margin-bottom: 3px; }
+  .card-eta { font-size: 10.5px; }
+  .card-footer-row { display: none; } /* 投稿日・ツイートは省略(一覧性優先) */
+  .card-duration { font-size: 9.5px; right: 4px; bottom: 4px; padding: 1px 4px; }
+  /* バッジ: モバイルでは高さを固定確保せず、必要な時だけ出す。
+     行高さのブレはResizeObserverが吸収するため、以前のような
+     プレースホルダーで領域を確保し続ける必要が無い。 */
+  .card-status-badge-placeholder { display: none; }
+  .card-status-badge { margin-bottom: 3px; padding: 1px 7px; height: auto; font-size: 9.5px; }
+  .card-chart-wrap { grid-area: chart; margin: 0; padding: 0 10px 10px; }
+  .card-chart { height: 110px; }
 }
 
 /* ── standalone(ホーム画面PWA)専用の微調整 ──────────────────

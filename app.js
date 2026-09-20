@@ -4,7 +4,7 @@
    公開専用SPA(個人モード・APIキー入力は実装しない)。
    public_data.json / public_config.json を読み込み、カード一覧を
    描画する。フィルタ(チャンネル軸: 全て/かなた/奏/おかゆ)と
-   ソート(再生数/投稿日/注目/勢い)を独立して組み合わせられる。
+   ソート(注目/再生数/勢い)を独立して組み合わせられる。
 
    【v3で追加: 行仮想化(virtualization)】
    「初回に全動画を一括読み込み・一括DOM生成するのは重すぎる」との
@@ -40,14 +40,16 @@ const AUTO_REFRESH_MS = 30 * 60 * 1000;
 const CARD_MIN_WIDTH_PX = 300;   // style.css側の値と合わせる(1カラムの最小幅)
 const CARD_MIN_WIDTH_PX_WIDE = 320; // 1600px以上での最小幅(style.cssのワイド版に合わせる)
 const GRID_GAP_PX = 16;
-const ESTIMATED_ROW_HEIGHT_PX = 400; // 実測前の初期見積もり(カード1枚のおおよその高さ)
+const ESTIMATED_ROW_HEIGHT_DESKTOP_PX = 400; // 実測前の初期見積もり(デスクトップの縦積みカード)
+const ESTIMATED_ROW_HEIGHT_MOBILE_PX = 112;  // モバイルの横並びコンパクトカード(style.cssの560px以下と対応)
+const MOBILE_MAX_WIDTH_PX = 560;
 const BUFFER_ROWS = 2; // 画面外に余分に確保しておく行数(上下それぞれ)
 
 let state = {
   config: null,
   data: null,
   channelFilter: 'all',       // 'all' | チャンネルキー
-  sortMode: 'views',          // 'views' | 'date' | 'featured' | 'momentum'
+  sortMode: 'featured',       // 'featured' | 'views' | 'momentum'
   autoRefreshOn: false,
   autoRefreshTimer: null,
   openCardIds: new Set(),     // グラフを開いているカードのvideoId集合
@@ -58,7 +60,7 @@ let state = {
 let virt = {
   entries: [],           // 現在のフィルタ/ソート適用後の全エントリ
   columns: 1,
-  rowHeights: new Map(), // rowIndex -> 実測px高さ(無ければESTIMATED_ROW_HEIGHT_PX)
+  rowHeights: new Map(), // rowIndex -> 実測px高さ(無ければestimatedRowHeight())
   rowOffsets: [],        // rowIndex -> 累積オフセットpx(先頭からの距離)
   renderedRange: { start: -1, end: -1 }, // 現在実DOM化している行の範囲
   scheduled: false,      // rAFの二重スケジュール防止(スクロール処理用)
@@ -93,25 +95,37 @@ function filterEntries(entries) {
   return entries.filter((e) => e.video.channel === state.channelFilter);
 }
 
+/**
+ * 注目順: 「もうすぐ大台に届く動画」を上に出す。
+ *
+ * 【設計の変遷】
+ * 初版は「次の大台までの進捗率が高い順」だった。しかしこれだと、
+ * 「あと165回で大台だが、1日0回しか増えない」動画が永遠に上位に居座る。
+ * 実データ(4,464本)では、ETAを出せない動画の7割が再生数横ばい、
+ * 3割が減少(不正再生除去等)で、これらは実質的に届かない。
+ *
+ * そこで並び順を次の3層にした:
+ *   1. 直近48時間以内に大台を達成した動画(祝う対象なので最上位)
+ *   2. 予測到達日(ETA)が出せる動画を、到達が近い順
+ *   3. ETAが出せない動画(横ばい・減少・データ不足)は最後に、
+ *      進捗率が高い順
+ * 「近い」の基準を日数(ETA)にすることで、残り再生数の絶対値に関係なく
+ * 1万・50万・100万…のどの大台でも公平に比較できる。
+ */
 function sortEntries(entries) {
   const arr = [...entries];
   if (state.sortMode === 'views') {
     arr.sort((a, b) => b.milestoneState.currentViews - a.milestoneState.currentViews);
-  } else if (state.sortMode === 'date') {
-    arr.sort((a, b) => new Date(b.video.publishedAt) - new Date(a.video.publishedAt));
   } else if (state.sortMode === 'momentum') {
     arr.sort((a, b) => (b.milestoneState.momentumPerDay || 0) - (a.milestoneState.momentumPerDay || 0));
-  } else if (state.sortMode === 'featured') {
-    // 注目: 達成済み(直近48h) → もうすぐ(soonThresholdDays以内) → その他、の3セクション
-    const rank = (e) => {
-      if (e.milestoneState.achievedRecently) return 0;
-      if (isSoon(e.milestoneState)) return 1;
-      return 2;
-    };
+  } else {
+    const tier = (m) => (m.achievedRecently ? 0 : m.etaSec != null ? 1 : 2);
     arr.sort((a, b) => {
-      const ra = rank(a), rb = rank(b);
-      if (ra !== rb) return ra - rb;
-      return b.milestoneState.currentViews - a.milestoneState.currentViews;
+      const A = a.milestoneState, B = b.milestoneState;
+      const ta = tier(A), tb = tier(B);
+      if (ta !== tb) return ta - tb;
+      if (ta === 1) return A.etaSec - B.etaSec;            // 到達が近い順
+      return B.progressRatio - A.progressRatio;             // 達成済み/予測不能は進捗順
     });
   }
   return arr;
@@ -138,10 +152,18 @@ function cardColorClass(ms) {
  */
 function statusBadgeLabel(ms) {
   if (ms.achievedRecently) {
-    return ms.achievedWithin24h ? '🎉 24時間以内に達成' : '✨ 48時間以内に達成';
+    // 「24時間以内に達成」だけでは何を達成したのか分からないため、
+    // 達成した大台そのものを出す(例: 「🎉 150万再生を達成!」)。
+    const label = formatMilestoneShort(ms.achievedMilestone);
+    return ms.achievedWithin24h ? `🎉 ${label}再生を達成!` : `✨ ${label}再生を達成`;
   }
   if (isSoon(ms)) return '🔥 まもなく到達';
   return null;
+}
+
+/** 大台を短く表記する(10000→"1万", 1500000→"150万")。 */
+function formatMilestoneShort(n) {
+  return `${Math.round(n / 10000).toLocaleString('ja-JP')}万`;
 }
 
 /**
@@ -156,6 +178,13 @@ function statusBadgeLabel(ms) {
  * 区別する。
  */
 function formatEtaLabel(ms) {
+  // 達成直後のカードは、バッジで達成を主役にしている。次の大台が
+  // 数百日先などの遠い予測をここで大きく出すと、お祝いの文脈とズレて
+  // 情報としてもノイズになるため、遠い予測(30日超)は「次は…」と控えめに出す。
+  if (ms.achievedRecently && ms.etaSec != null) {
+    const days = Math.round((ms.etaSec - Date.now() / 1000) / 86400);
+    if (days > 30) return `次の節目は当分先です`;
+  }
   if (ms.etaSec == null) {
     if (ms.historyPointCount < 2) return 'データ収集中…';
     if (ms.historyPointCount < 3) return 'データ収集中(あと少し)';
@@ -318,8 +347,14 @@ function rowCount() {
   return Math.ceil(virt.entries.length / virt.columns);
 }
 
+function estimatedRowHeight() {
+  return window.innerWidth <= MOBILE_MAX_WIDTH_PX
+    ? ESTIMATED_ROW_HEIGHT_MOBILE_PX
+    : ESTIMATED_ROW_HEIGHT_DESKTOP_PX;
+}
+
 function rowHeight(rowIndex) {
-  return virt.rowHeights.get(rowIndex) || ESTIMATED_ROW_HEIGHT_PX;
+  return virt.rowHeights.get(rowIndex) || estimatedRowHeight();
 }
 
 /** 各行の開始オフセット(px)を先頭から積算して作り直す。 */
@@ -475,32 +510,45 @@ function performVirtualRender(force) {
 
   const range = computeVisibleRowRange();
   const sameRange = !force && range.start === virt.renderedRange.start && range.end === virt.renderedRange.end;
+  if (sameRange) return;
 
-  if (!sameRange) {
-    const observer = ensureRowResizeObserver();
-    // 画面外に出す行のobserveを解除する(メモリリーク防止、かつ
-    // 見えなくなった行のサイズ変化を無視するため)。
+  const observer = ensureRowResizeObserver();
+
+  // 【スクロールのカクつき対策: 全破棄→全再生成をやめて差分更新にする】
+  // 以前は範囲が1行ずれるたびに el.grid.innerHTML='' で全行を破棄し、
+  // 全カード・全<img>を作り直していた。これはスクロールの度にサムネの
+  // 再デコードとレイアウト再計算を発生させ、カクつきの最大の原因だった。
+  // 今は「範囲外に出た行だけ削除」「範囲内に入った行だけ追加」し、
+  // 既に表示中の行のDOMは触らない(サムネも再デコードされない)。
+  const existing = new Map();
+  el.grid.querySelectorAll('.virt-row').forEach((rowEl) => {
+    existing.set(Number(rowEl.dataset.rowIndex), rowEl);
+  });
+
+  if (force) {
+    // フィルタ/ソート変更・列数変更・データ再取得時は中身自体が変わるので全部作り直す
     observer.disconnect();
-
-    el.grid.innerHTML = '';
-    for (let r = range.start; r <= range.end; r++) {
-      const rowEl = makeRowContainer(r);
-      el.grid.appendChild(rowEl);
-      observer.observe(rowEl);
-    }
-    virt.renderedRange = range;
-
-    // observeした直後の初回コールバックで、DOM構築直後の暫定サイズが
-    // 一度は必ず報告される。その後、画像デコードやフォント確定で
-    // サイズが変わればResizeObserverが自動的に再度通知してくれるため、
-    // 手動でのポーリング(rAFループ)は一切不要になった。
+    el.grid.textContent = '';
+    existing.clear();
   } else {
-    // 行の入れ替えが無い場合(グラフ開閉等)でも、念のため現在の実測値で
-    // オフセットを同期しておく。
-    measureRenderedRows();
-    rebuildRowOffsets();
-    el.grid.style.height = `${totalGridHeight()}px`;
+    existing.forEach((rowEl, idx) => {
+      if (idx < range.start || idx > range.end) {
+        observer.unobserve(rowEl);
+        rowEl.remove();
+        existing.delete(idx);
+      }
+    });
   }
+
+  const frag = document.createDocumentFragment();
+  for (let r = range.start; r <= range.end; r++) {
+    if (existing.has(r)) continue;
+    const rowEl = makeRowContainer(r);
+    frag.appendChild(rowEl);
+    observer.observe(rowEl);
+  }
+  el.grid.appendChild(frag);
+  virt.renderedRange = range;
 }
 
 function onScrollOrResize() {

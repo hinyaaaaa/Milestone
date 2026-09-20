@@ -49,26 +49,51 @@ export function leastSquaresFit(points) {
 }
 
 /**
- * 現在の再生数から見て、次に到達するマイルストーン(milestoneStepの倍数)を返す。
- * 既にちょうど倍数の場合は、その次の倍数を返す(「次に目指す節目」という定義のため)。
- * @param {number} currentViews
- * @param {number} milestoneStep
+ * 「大台」の一覧を返す。
+ *   1万, 5万, 10万, 50万, 100万, 150万, 200万, 250万, 300万, ...
+ * 100万までは 1・5 の刻み(1万→5万→10万→50万→100万)、
+ * 100万を超えたら50万刻みで無限に続く。
+ * 小さい動画にも意味のある節目を出しつつ、大きい動画では
+ * 「次の100万」ではなく「次の50万」を目標にできるようにする。
  */
-export function nextMilestone(currentViews, milestoneStep) {
-  if (!(milestoneStep > 0)) return null;
-  const n = Math.floor(currentViews / milestoneStep) + 1;
-  return n * milestoneStep;
+const MILESTONE_HEAD = [10000, 50000, 100000, 500000, 1000000];
+const MILESTONE_TAIL_STEP = 500000; // 100万以降の刻み
+
+/** 大台のうち、n番目(0始まり)の値を返す。 */
+function milestoneAt(i) {
+  if (i < MILESTONE_HEAD.length) return MILESTONE_HEAD[i];
+  return 1000000 + (i - (MILESTONE_HEAD.length - 1)) * MILESTONE_TAIL_STEP;
 }
 
 /**
- * 直近の「達成済み」マイルストーン(現在の再生数以下で最大の倍数)を返す。
- * 達成後48時間以内かどうかの色分け判定に使う。
+ * 現在の再生数から見て、次に到達する大台を返す。
+ * ちょうど大台の場合は、その次の大台を返す。
+ * milestoneStepは互換のため受け取るが使わない(大台は固定テーブルのため)。
  * @param {number} currentViews
- * @param {number} milestoneStep
  */
-export function lastAchievedMilestone(currentViews, milestoneStep) {
-  if (!(milestoneStep > 0) || currentViews < milestoneStep) return null;
-  return Math.floor(currentViews / milestoneStep) * milestoneStep;
+export function nextMilestone(currentViews) {
+  let i = 0;
+  while (milestoneAt(i) <= currentViews) i++;
+  return milestoneAt(i);
+}
+
+/**
+ * 現在の再生数以下で最大の「達成済みの大台」を返す。1万未満ならnull。
+ * @param {number} currentViews
+ */
+export function lastAchievedMilestone(currentViews) {
+  if (currentViews < MILESTONE_HEAD[0]) return null;
+  let i = 0;
+  while (milestoneAt(i + 1) <= currentViews) i++;
+  return milestoneAt(i);
+}
+
+/**
+ * 1つ前の大台(次の大台の直前)。進捗バーの起点に使う。
+ * 最初の大台(1万)より手前なら0を返す。
+ */
+export function previousMilestone(currentViews) {
+  return lastAchievedMilestone(currentViews) ?? 0;
 }
 
 /**
@@ -117,10 +142,10 @@ export function computeMomentum(history, nowSec) {
  *   historyPointCount: number,   // 履歴の点数(「予測不能」と「データ収集中」の区別に使う)
  * } | null} 履歴が空ならnull
  */
-export function computeMilestoneState(history, milestoneStep, nowSec = Math.floor(Date.now() / 1000)) {
+export function computeMilestoneState(history, _milestoneStepUnused, nowSec = Math.floor(Date.now() / 1000)) {
   if (!history.length) return null;
   const currentViews = history[history.length - 1].views;
-  const milestone = nextMilestone(currentViews, milestoneStep);
+  const milestone = nextMilestone(currentViews);
   const viewsRemaining = milestone - currentViews;
   const momentumPerDay = computeMomentum(history, nowSec);
 
@@ -134,13 +159,23 @@ export function computeMilestoneState(history, milestoneStep, nowSec = Math.floo
     if (candidate > nowSec) etaSec = candidate;
   }
 
-  const prevMilestone = milestone - milestoneStep;
-  const achievedAt = findAchievementTime(history, prevMilestone);
+  // 【達成判定の修正】
+  // 以前は「履歴の中で節目を最初に超えていた点」を達成時刻とみなしていたため、
+  // 収集開始時点で既に超えていた動画(=何年も前に達成済み)まで、履歴の
+  // 先頭点の時刻を達成時刻と誤認し、100万超えの全動画に「24時間以内に達成」
+  // が付いていた。
+  // 正しくは「履歴の中で、節目の"下"から"上"へまたいだ瞬間が実際に観測
+  // できた場合のみ」達成とみなす。先頭点が既に節目以上なら、いつ達成した
+  // か分からない(=過去の達成)ので、達成扱いにしない。
+  const prevMilestone = lastAchievedMilestone(currentViews);
+  const achievedAt = prevMilestone != null ? findCrossingTime(history, prevMilestone) : null;
   const achievedRecently = achievedAt != null && nowSec - achievedAt <= 48 * 3600;
   const achievedWithin24h = achievedAt != null && nowSec - achievedAt <= 24 * 3600;
 
-  const progressRatio = milestoneStep > 0
-    ? Math.max(0, Math.min(1, (currentViews - prevMilestone) / milestoneStep))
+  const base = prevMilestone ?? 0;
+  const span = milestone - base;
+  const progressRatio = span > 0
+    ? Math.max(0, Math.min(1, (currentViews - base) / span))
     : 0;
 
   return {
@@ -151,27 +186,26 @@ export function computeMilestoneState(history, milestoneStep, nowSec = Math.floo
     etaSec,
     achievedRecently,
     achievedWithin24h,
+    achievedMilestone: achievedRecently ? prevMilestone : null,
     progressRatio,
-    // v3追加: 「予測不能」と「データ収集中」を呼び出し側で区別できるようにする。
-    // GitHub Actions収集開始直後は履歴が1〜2点しかなく、回帰が原理的に
-    // 成立しない期間が必ず生じる(30分間隔なので、意味のある傾きが
-    // 得られるまで数時間〜数日かかる)。これは不具合ではなく初期状態
-    // だが、"予測不能"とだけ表示するとユーザーには「壊れている」ように
-    // 見えるため、区別に必要な生の点数をここで返す。
+    // 「予測不能」と「データ収集中」を呼び出し側で区別するための履歴点数。
     historyPointCount: history.length,
   };
 }
 
 /**
- * 履歴の中で、再生数が指定した節目を初めて超えた時刻を探す。
- * @param {Array<{t:number, views:number}>} history
+ * 履歴の中で、再生数が指定した節目を「下から上へまたいだ」時刻を返す。
+ * またいだ瞬間が観測できない場合(先頭点が既に節目以上)はnullを返す。
+ * これにより「収集開始前に達成済みだった動画」を新規達成と誤認しない。
+ * @param {Array<{t:number, views:number}>} history 古い→新しい順
  * @param {number} milestoneViews
- * @returns {number | null}
+ * @returns {number | null} またいだ区間の後ろ側の点の時刻
  */
-function findAchievementTime(history, milestoneViews) {
-  if (milestoneViews <= 0) return null;
-  for (let i = 0; i < history.length; i++) {
-    if (history[i].views >= milestoneViews) return history[i].t;
+function findCrossingTime(history, milestoneViews) {
+  for (let i = 1; i < history.length; i++) {
+    if (history[i - 1].views < milestoneViews && history[i].views >= milestoneViews) {
+      return history[i].t;
+    }
   }
   return null;
 }
