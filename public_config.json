@@ -1,0 +1,24 @@
+{
+  "defaultMilestoneStep": 1000000,
+  "soonThresholdDays": 3,
+  "channels": {
+    "kanata": {
+      "handle": "AmaneKanata",
+      "displayName": "天音かなた",
+      "themeColor": "#76c0ea",
+      "milestoneStep": 1000000
+    },
+    "kanade": {
+      "handle": "OtonoseKanade",
+      "displayName": "音乃瀬奏",
+      "themeColor": "#f6c663",
+      "milestoneStep": 1000000
+    },
+    "okayu": {
+      "handle": "NekomataOkayu",
+      "displayName": "猫又おかゆ",
+      "themeColor": "#f2a6c4",
+      "milestoneStep": 1000000
+    }
+  }
+}

@@ -1,0 +1,42 @@
+name: Collect view counts
+
+on:
+  schedule:
+    # 毎時 :00 と :30 に実行(UTC基準のcron)。元ツール(kanade-milestone)の
+    # 更新頻度に合わせている。GitHub Actionsのscheduleは遅延することが
+    # あるため、あくまで目安の時刻になる。
+    - cron: '0,30 * * * *'
+  workflow_dispatch: {}   # 手動実行用(動作確認・障害時の即時再取得に使う)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-view-counts
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run collector
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+        run: node scripts/collect.mjs
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public_data.json
+          git diff --cached --quiet && echo "変更なし、コミットをスキップします" && exit 0
+          git commit -m "chore: update view count data [skip ci]"
+          git push
