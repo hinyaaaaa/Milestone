@@ -114,6 +114,7 @@ export function computeMomentum(history, nowSec) {
  *   achievedRecently: boolean,   // 過去48時間以内に(直前の)節目を達成したか
  *   achievedWithin24h: boolean,  // 過去24時間以内(48h超では薄いゴールドにするための区別)
  *   progressRatio: number,       // 前の節目から次の節目までの進捗(0〜1)
+ *   historyPointCount: number,   // 履歴の点数(「予測不能」と「データ収集中」の区別に使う)
  * } | null} 履歴が空ならnull
  */
 export function computeMilestoneState(history, milestoneStep, nowSec = Math.floor(Date.now() / 1000)) {
@@ -151,6 +152,13 @@ export function computeMilestoneState(history, milestoneStep, nowSec = Math.floo
     achievedRecently,
     achievedWithin24h,
     progressRatio,
+    // v3追加: 「予測不能」と「データ収集中」を呼び出し側で区別できるようにする。
+    // GitHub Actions収集開始直後は履歴が1〜2点しかなく、回帰が原理的に
+    // 成立しない期間が必ず生じる(30分間隔なので、意味のある傾きが
+    // 得られるまで数時間〜数日かかる)。これは不具合ではなく初期状態
+    // だが、"予測不能"とだけ表示するとユーザーには「壊れている」ように
+    // 見えるため、区別に必要な生の点数をここで返す。
+    historyPointCount: history.length,
   };
 }
 

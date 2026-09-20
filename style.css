@@ -100,18 +100,27 @@ body {
 
 #last-updated { font-size: 10.5px; color: rgba(244,241,234,.45); margin-top: 8px; }
 
-/* ── カードグリッド ───────────────────────────────────────
-   Windowsの広いデスクトップ画面(ウルトラワイド含む)でカードが
-   間延びしないよう、1600px超では列数を増やす形にして密度を保つ。
-   iPhone単列時は横幅いっぱいに広げる。 */
+/* ── カードグリッド(v3: 行仮想化の土台) ──────────────────────
+   自己採点後の修正で「初回に全カードを一括DOM化するのは重すぎる」
+   という指摘に対応し、#card-gridはもう自分ではgrid-template-columns
+   を持たない。実際の列数計算・行ごとのgrid配置はapp.js側が
+   JSで行い(理由はapp.js冒頭コメント参照)、ここでは
+   「絶対配置される行(.virt-row)を乗せるための土台」としての
+   position:relativeとpadding/max-widthだけを持つ。
+   .virt-row自体のgrid-template-columnsはapp.jsがインラインstyleで
+   都度設定する。 */
 #card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 16px;
+  position: relative;
   padding: 20px;
   padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
   max-width: 1600px;
   margin: 0 auto;
+}
+
+.virt-row {
+  /* position/top/grid-template-columnsはapp.jsがインラインstyleで設定する。
+     ここでは行内カードの見た目に関わる部分だけを持つ。 */
+  min-width: 0;
 }
 
 #empty-state {
@@ -197,24 +206,46 @@ body {
 /* ── 「注目」バッジ(v2で追加): 階層をボーダー色だけに頼らない ──
    達成直後・もうすぐ到達のカードには、タイトル上に小さなバッジ文言を
    出し、縁取り色が分かりにくい環境(色覚特性・低品質ディスプレイ等)
-   でも情報が伝わるようにする。 */
-.card-status-badge {
+   でも情報が伝わるようにする。
+
+   【行の重なりバグの再発防止】
+   バッジの表示/非表示でカードの高さが変わると、同じ行の中で
+   バッジ有りカードと無しカードが混在した際に行の高さが動的に
+   変わってしまい、それを実測して位置を補正する複雑な仕組み
+   (JSのsettleRowHeights)が必要になっていた。その仕組み自体に
+   複数のバグを作り込んでしまった反省から、そもそも高さが動かない
+   よう、バッジの有無に関わらず常に同じ高さの領域を確保する設計に
+   変更した。バッジが無いカードは.card-status-badge-placeholderで
+   同じ高さの透明領域を確保する(app.js側で出し分ける)。 */
+.card-status-badge,
+.card-status-badge-placeholder {
   display: inline-flex; align-items: center; gap: 4px;
   font-size: 10px; font-weight: 700; letter-spacing: .03em;
   padding: 3px 9px; border-radius: 999px; margin-bottom: 6px;
+  height: 12px; /* line-height相当の高さを明示し、内容の有無で行の高さが変わらないようにする */
+  box-sizing: content-box;
+}
+.card-status-badge {
   background: color-mix(in srgb, var(--theme) 22%, transparent);
   color: var(--theme);
   border: 1px solid color-mix(in srgb, var(--theme) 45%, transparent);
 }
+.card-status-badge-placeholder {
+  visibility: hidden;
+  border: 1px solid transparent;
+}
 
-/* ── Windowsデスクトップ向け: ワイド画面では列数と余白を調整 ──── */
+/* ── Windowsデスクトップ向け: ワイド画面ではpaddingを調整 ────────
+   列数・gapの計算自体はapp.js側のCARD_MIN_WIDTH_PX_WIDE / GRID_GAP_PX
+   に一本化した(ここでgrid-template-columnsを重ねて指定すると、JSが
+   計算した列数と表示上の列数がズレる)。 */
 @media (min-width: 1600px) {
-  #card-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; padding: 24px; }
+  #card-grid { padding: 24px; }
 }
 
 /* ── モバイル(iPhone想定) ─────────────────────────────── */
 @media (max-width: 480px) {
-  #card-grid { grid-template-columns: 1fr; padding: 14px; gap: 12px; }
+  #card-grid { padding: 14px; }
   #app-header { padding: calc(env(safe-area-inset-top, 0px) + 10px) 14px 10px; }
   #app-title { font-size: 15px; }
 }

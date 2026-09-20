@@ -1,10 +1,30 @@
 /* ============================================================
-   app.js — メイン画面のオーケストレーション
+   app.js — メイン画面のオーケストレーション(v3: 仮想化対応)
    ------------------------------------------------------------
    公開専用SPA(個人モード・APIキー入力は実装しない)。
    public_data.json / public_config.json を読み込み、カード一覧を
    描画する。フィルタ(チャンネル軸: 全て/かなた/奏/おかゆ)と
    ソート(再生数/投稿日/注目/勢い)を独立して組み合わせられる。
+
+   【v3で追加: 行仮想化(virtualization)】
+   「初回に全動画を一括読み込み・一括DOM生成するのは重すぎる」との
+   指摘への対応。件数が数百規模になると、backdrop-filter付きの
+   glass-cardを全部同時にDOM化するだけで初回描画が大きく遅延する
+   (content-visibility:autoは「描画コスト」は減らせても「DOM生成
+   コスト」自体は減らせないため、根本対策にならない)。
+
+   方式: カードをグリッドの「行」単位でグループ化し、スクロール位置
+   から見えている行の範囲(+前後バッファ数行)だけを実際にDOM化する。
+   それ以外の行は高さだけを確保したプレースホルダーのdivにする。
+   列数は画面幅とカード最小幅から実測して決める(CSS側のauto-fillを
+   使うと、JS側から「今何列か」を知る手段がなくなり仮想化と噛み合わ
+   ないため、列数の計算はJS側に一本化した — style.css側は
+   card-min-widthの値だけを持ち、実際のtemplate-columnsはここで
+   インラインstyleとして設定する)。
+
+   行の高さはカードの内容(グラフ開閉等)で可変なため、実際にDOM化
+   した行のBoundingClientRectを都度計測してキャッシュし、次回の
+   スクロール位置計算に使う(固定行高を仮定しない)。
 
    自動更新: ⟳ボタンでON/OFF。ONの間は30分ごとにデータを再取得する
    (元ツール踏襲。データ自体がAction側で30分おきにしか更新されない
@@ -16,6 +36,13 @@ import { drawHistoryChart, findNearestPoint } from './chart.js';
 
 const AUTO_REFRESH_MS = 30 * 60 * 1000;
 
+// 仮想化パラメータ
+const CARD_MIN_WIDTH_PX = 300;   // style.css側の値と合わせる(1カラムの最小幅)
+const CARD_MIN_WIDTH_PX_WIDE = 320; // 1600px以上での最小幅(style.cssのワイド版に合わせる)
+const GRID_GAP_PX = 16;
+const ESTIMATED_ROW_HEIGHT_PX = 400; // 実測前の初期見積もり(カード1枚のおおよその高さ)
+const BUFFER_ROWS = 2; // 画面外に余分に確保しておく行数(上下それぞれ)
+
 let state = {
   config: null,
   data: null,
@@ -24,6 +51,17 @@ let state = {
   autoRefreshOn: false,
   autoRefreshTimer: null,
   openCardIds: new Set(),     // グラフを開いているカードのvideoId集合
+};
+
+// 仮想化用の可変状態(renderとは別に持つ。フィルタ/ソートが変わる
+// たびにentriesとrowsは作り直すが、スクロール位置自体は極力保つ)
+let virt = {
+  entries: [],           // 現在のフィルタ/ソート適用後の全エントリ
+  columns: 1,
+  rowHeights: new Map(), // rowIndex -> 実測px高さ(無ければESTIMATED_ROW_HEIGHT_PX)
+  rowOffsets: [],        // rowIndex -> 累積オフセットpx(先頭からの距離)
+  renderedRange: { start: -1, end: -1 }, // 現在実DOM化している行の範囲
+  scheduled: false,      // rAFの二重スケジュール防止(スクロール処理用)
 };
 
 const el = {
@@ -96,7 +134,7 @@ function cardColorClass(ms) {
 
 /**
  * カード上部に出す「注目」バッジの文言を返す。null なら非表示。
- * 縁取りの色分けだけに頼らない複合的な階層表現(自己採点での指摘対応)。
+ * 縁取りの色分けだけに頼らない複合的な階層表現。
  */
 function statusBadgeLabel(ms) {
   if (ms.achievedRecently) {
@@ -106,9 +144,24 @@ function statusBadgeLabel(ms) {
   return null;
 }
 
-function formatEtaLabel(etaSec) {
-  if (etaSec == null) return '予測不能';
-  const d = new Date(etaSec * 1000);
+/**
+ * ETA(到達予測)のラベルを返す。
+ * 【v3修正: 「予測不能」の原因対応】
+ * 収集開始直後(履歴が1〜2点しかない)は回帰が成立せず常にetaSecが
+ * nullになり、常に「予測不能」と表示されてしまっていた。これは
+ * バグではなく仕様通りの挙動だが、ユーザーには「壊れている」ように
+ * 見えるため、milestoneState側からデータ点数を受け取り、
+ * 「予測不能(=データはあるが横ばい/減少で予測できない)」と
+ * 「データ収集中(=そもそも予測に足る点数がまだ無い)」を文言で
+ * 区別する。
+ */
+function formatEtaLabel(ms) {
+  if (ms.etaSec == null) {
+    if (ms.historyPointCount < 2) return 'データ収集中…';
+    if (ms.historyPointCount < 3) return 'データ収集中(あと少し)';
+    return '予測不能(伸びが横ばい)';
+  }
+  const d = new Date(ms.etaSec * 1000);
   const now = new Date();
   const diffDays = Math.round((d - now) / 86400000);
   const dateLabel = `${d.getMonth() + 1}/${d.getDate()}`;
@@ -131,6 +184,12 @@ function formatDuration(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str || '';
+  return d.innerHTML;
+}
+
 function buildCard(entry) {
   const { videoId, video, milestoneState: ms } = entry;
   const channelCfg = state.config.channels[video.channel] || {};
@@ -144,7 +203,9 @@ function buildCard(entry) {
   const progressPct = Math.round(ms.progressRatio * 100);
   const momentumLabel = isFinite(ms.momentumPerDay) ? `+${formatManUnit(ms.momentumPerDay)}/日` : '—';
   const badgeLabel = statusBadgeLabel(ms);
-  const badgeHtml = badgeLabel ? `<div class="card-status-badge">${badgeLabel}</div>` : '';
+  const badgeHtml = badgeLabel
+    ? `<div class="card-status-badge">${badgeLabel}</div>`
+    : `<div class="card-status-badge-placeholder"></div>`;
 
   card.innerHTML = `
     <a class="card-thumb-link" href="https://www.youtube.com/watch?v=${videoId}" target="_blank" rel="noopener" aria-label="${escapeHtml(video.title)}をYouTubeで開く">
@@ -165,7 +226,7 @@ function buildCard(entry) {
           <span>残り ${formatViews(ms.viewsRemaining)}</span>
         </div>
         <div class="card-progress-track"><div class="card-progress-fill" style="width:${progressPct}%"></div></div>
-        <div class="card-eta">${formatEtaLabel(ms.etaSec)}</div>
+        <div class="card-eta">${formatEtaLabel(ms)}</div>
       </div>
       <div class="card-footer-row">
         <span class="card-published">${formatPublishedDate(video.publishedAt)}</span>
@@ -204,6 +265,10 @@ function toggleChart(videoId, card, history) {
     state.openCardIds.add(videoId);
     renderChartInto(card, history);
   }
+  // 開閉による行の高さ変化は、その行を監視しているResizeObserverが
+  // 自動的に検知して位置を補正するため、ここで明示的に何かをする
+  // 必要は無い(以前はここで手動の再測定をスケジュールしていたが、
+  // ResizeObserver導入によりその手動処理は不要になった)。
 }
 
 function renderChartInto(card, history) {
@@ -230,23 +295,257 @@ function openTweetIntent(video, ms, videoId) {
   window.open(tweetUrl, '_blank', 'noopener');
 }
 
-function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str || '';
-  return d.innerHTML;
+/* ============================================================
+   仮想化コア
+   ------------------------------------------------------------
+   #card-gridの子要素は「行コンテナ(.virt-row)」のみとし、各行の中に
+   その行が担当する列数分のカード(または高さ確保用のプレースホルダー)
+   を入れる。行コンテナ自体はabsolute配置にしてtranslateYで積み上げる
+   ことで、間の行を完全にDOMから外しても後続行の位置がずれないように
+   している(単純にdisplay:noneで間引く方式だと、後続要素の位置計算が
+   ブラウザに委ねられず自前で管理する必要が生じて複雑になるため、
+   絶対配置+高さ管理の方式を採る)。
+   ============================================================ */
+
+function computeColumns() {
+  const gridWidth = el.grid.clientWidth || window.innerWidth;
+  const minWidth = window.innerWidth >= 1600 ? CARD_MIN_WIDTH_PX_WIDE : CARD_MIN_WIDTH_PX;
+  const cols = Math.max(1, Math.floor((gridWidth + GRID_GAP_PX) / (minWidth + GRID_GAP_PX)));
+  return cols;
 }
 
+function rowCount() {
+  return Math.ceil(virt.entries.length / virt.columns);
+}
+
+function rowHeight(rowIndex) {
+  return virt.rowHeights.get(rowIndex) || ESTIMATED_ROW_HEIGHT_PX;
+}
+
+/** 各行の開始オフセット(px)を先頭から積算して作り直す。 */
+function rebuildRowOffsets() {
+  const n = rowCount();
+  const offsets = new Array(n + 1);
+  offsets[0] = 0;
+  for (let i = 0; i < n; i++) {
+    offsets[i + 1] = offsets[i] + rowHeight(i) + GRID_GAP_PX;
+  }
+  virt.rowOffsets = offsets;
+}
+
+function totalGridHeight() {
+  const n = rowCount();
+  return virt.rowOffsets[n] != null ? virt.rowOffsets[n] - GRID_GAP_PX : 0;
+}
+
+/** 現在のスクロール位置から、画面に見えている行の範囲を求める。 */
+function computeVisibleRowRange() {
+  const rect = el.grid.getBoundingClientRect();
+  const viewportTop = -rect.top;
+  const viewportBottom = viewportTop + window.innerHeight;
+
+  const n = rowCount();
+  let startRow = 0, endRow = n - 1;
+
+  // 二分探索するほどの行数を想定しないため(数百動画でも数十〜百数十行程度)、
+  // 線形走査で十分に軽い。もし将来的に行数が数千規模になるなら二分探索へ
+  // 切り替える余地を残す。
+  for (let i = 0; i < n; i++) {
+    if (virt.rowOffsets[i + 1] > viewportTop) { startRow = i; break; }
+    startRow = i + 1;
+  }
+  for (let i = startRow; i < n; i++) {
+    if (virt.rowOffsets[i] > viewportBottom) { endRow = i - 1; break; }
+    endRow = i;
+  }
+
+  startRow = Math.max(0, startRow - BUFFER_ROWS);
+  endRow = Math.min(n - 1, endRow + BUFFER_ROWS);
+  return { start: startRow, end: endRow };
+}
+
+function makeRowContainer(rowIndex) {
+  const row = document.createElement('div');
+  row.className = 'virt-row';
+  row.dataset.rowIndex = String(rowIndex);
+  row.style.position = 'absolute';
+  row.style.left = '0';
+  row.style.right = '0';
+  row.style.top = `${virt.rowOffsets[rowIndex]}px`;
+  row.style.display = 'grid';
+  row.style.gridTemplateColumns = `repeat(${virt.columns}, 1fr)`;
+  row.style.gap = `${GRID_GAP_PX}px`;
+
+  const startIdx = rowIndex * virt.columns;
+  for (let c = 0; c < virt.columns; c++) {
+    const entry = virt.entries[startIdx + c];
+    if (!entry) break; // 最終行の余り(列数に満たない)
+    row.appendChild(buildCard(entry));
+  }
+  return row;
+}
+
+/** 実際にDOM化されている行の高さを計測してキャッシュを更新する。変化があればtrueを返す。 */
+function measureRenderedRows() {
+  let changed = false;
+  el.grid.querySelectorAll('.virt-row').forEach((rowEl) => {
+    const rowIndex = Number(rowEl.dataset.rowIndex);
+    const measured = rowEl.getBoundingClientRect().height;
+    if (measured > 0) {
+      const prev = virt.rowHeights.get(rowIndex);
+      if (prev == null || Math.abs(prev - measured) > 1) {
+        virt.rowHeights.set(rowIndex, measured);
+        changed = true;
+      }
+    }
+  });
+  return changed;
+}
+
+let virtualRenderForce = false;
+function scheduleVirtualRender(force = false) {
+  if (force) virtualRenderForce = true;
+  if (virt.scheduled) return;
+  virt.scheduled = true;
+  requestAnimationFrame(() => {
+    virt.scheduled = false;
+    performVirtualRender(virtualRenderForce);
+    virtualRenderForce = false;
+  });
+}
+
+/**
+ * 【行の重なりバグの根本原因と修正】
+ * 検証の結果、以下の2つの問題が重なって発生していた:
+ *
+ * 1. サムネイル画像+可変長タイトル+バッジ有無が絡む複雑なレイアウト
+ *    では、DOM構築後にrequestAnimationFrameを何回か待っても、
+ *    ブラウザのレイアウト計算がいつ確定するかを予測できない
+ *    (環境やコンテンツによって収束までの所要フレーム数が変わる)。
+ *    固定回数のrAFループで様子見する方式を試したが、少なすぎれば
+ *    間に合わず、多くすれば無駄な待ち時間(最大1秒以上)が生じるという
+ *    トレードオフから抜け出せなかった。
+ *
+ * 2. さらに、直前の測定ループが完了する前に新しいDOM再構築が発生すると
+ *    新旧のループが同じDOMを競合して書き換える問題もあった。
+ *
+ * 対策: 「何回rAFを待てば十分か」を推測するのをやめ、
+ * ResizeObserverを使う。これはブラウザ自身が要素の実際のサイズ変化を
+ * 検知した"その瞬間"に確実にコールバックを呼ぶ仕組みなので、
+ * 何フレームかかるかを推測する必要が無くなり、かつ最速で反応できる。
+ * 世代(generation)による多重発火防止は、DOM再構築のたびに
+ * observeし直すことで自然に解消される(古い行のobserveは
+ * unobserve/disconnectで確実に止める)。
+ */
+let rowResizeObserver = null;
+
+function ensureRowResizeObserver() {
+  if (rowResizeObserver) return rowResizeObserver;
+  rowResizeObserver = new ResizeObserver((entries) => {
+    let changed = false;
+    entries.forEach((entry) => {
+      const rowEl = entry.target;
+      const rowIndex = Number(rowEl.dataset.rowIndex);
+      // ResizeObserverはborder-boxサイズを返すコールバックもあるが、
+      // ブラウザ間の実装差を避けるため、ここではgetBoundingClientRectで
+      // 素直に読み直す(entry.contentRect等の細部の差異に依存しない)。
+      const measured = rowEl.getBoundingClientRect().height;
+      if (measured > 0) {
+        const prev = virt.rowHeights.get(rowIndex);
+        if (prev == null || Math.abs(prev - measured) > 1) {
+          virt.rowHeights.set(rowIndex, measured);
+          changed = true;
+        }
+      }
+    });
+    if (changed) {
+      rebuildRowOffsets();
+      el.grid.style.height = `${totalGridHeight()}px`;
+      el.grid.querySelectorAll('.virt-row').forEach((rowEl) => {
+        const idx = Number(rowEl.dataset.rowIndex);
+        rowEl.style.top = `${virt.rowOffsets[idx]}px`;
+      });
+    }
+  });
+  return rowResizeObserver;
+}
+
+function performVirtualRender(force) {
+  if (!virt.entries.length) return;
+
+  const range = computeVisibleRowRange();
+  const sameRange = !force && range.start === virt.renderedRange.start && range.end === virt.renderedRange.end;
+
+  if (!sameRange) {
+    const observer = ensureRowResizeObserver();
+    // 画面外に出す行のobserveを解除する(メモリリーク防止、かつ
+    // 見えなくなった行のサイズ変化を無視するため)。
+    observer.disconnect();
+
+    el.grid.innerHTML = '';
+    for (let r = range.start; r <= range.end; r++) {
+      const rowEl = makeRowContainer(r);
+      el.grid.appendChild(rowEl);
+      observer.observe(rowEl);
+    }
+    virt.renderedRange = range;
+
+    // observeした直後の初回コールバックで、DOM構築直後の暫定サイズが
+    // 一度は必ず報告される。その後、画像デコードやフォント確定で
+    // サイズが変わればResizeObserverが自動的に再度通知してくれるため、
+    // 手動でのポーリング(rAFループ)は一切不要になった。
+  } else {
+    // 行の入れ替えが無い場合(グラフ開閉等)でも、念のため現在の実測値で
+    // オフセットを同期しておく。
+    measureRenderedRows();
+    rebuildRowOffsets();
+    el.grid.style.height = `${totalGridHeight()}px`;
+  }
+}
+
+function onScrollOrResize() {
+  scheduleVirtualRender(false);
+}
+
+function initVirtualization() {
+  el.grid.style.position = 'relative';
+  window.addEventListener('scroll', onScrollOrResize, { passive: true });
+  window.addEventListener('resize', () => {
+    const newColumns = computeColumns();
+    if (newColumns !== virt.columns) {
+      virt.columns = newColumns;
+      // 列数が変わると各行の担当エントリ自体が変わるため、高さの見積もりも
+      // リセットして作り直す(古い高さを引き継ぐと段組みがずれるため)。
+      virt.rowHeights.clear();
+      rebuildRowOffsets();
+      el.grid.style.height = `${totalGridHeight()}px`;
+    }
+    onScrollOrResize();
+  }, { passive: true });
+}
+
+/** フィルタ/ソート変更、初回データ取得時に呼ぶ「全面作り直し」。 */
 function render() {
   const entries = sortEntries(filterEntries(buildEntries()));
-  el.grid.innerHTML = '';
+  virt.entries = entries;
+
   if (!entries.length) {
+    el.grid.innerHTML = '';
+    el.grid.style.height = '';
     el.emptyState.hidden = false;
     return;
   }
   el.emptyState.hidden = true;
-  const frag = document.createDocumentFragment();
-  entries.forEach((entry) => frag.appendChild(buildCard(entry)));
-  el.grid.appendChild(frag);
+
+  virt.columns = computeColumns();
+  // フィルタ/ソートで中身が変わるため、高さの見積もりは一旦クリアして
+  // 初期見積もり値からやり直す(古いエントリの高さを新しいエントリに
+  // 誤って流用しないため)。
+  virt.rowHeights.clear();
+  virt.renderedRange = { start: -1, end: -1 };
+  rebuildRowOffsets();
+  el.grid.style.height = `${totalGridHeight()}px`;
+  performVirtualRender(true);
 }
 
 function renderChannelTabs() {
@@ -311,6 +610,7 @@ el.sortSelect.addEventListener('change', () => {
 
 async function init() {
   try {
+    initVirtualization();
     const [config, data] = await Promise.all([loadPublicConfig(), loadPublicData()]);
     state.config = config;
     state.data = data;
