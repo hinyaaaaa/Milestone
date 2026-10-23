@@ -34,6 +34,9 @@ import { loadPublicData, loadPublicConfig } from './data-loader.js';
 import { computeMilestoneState, formatManUnit, formatViews } from './milestone.js';
 import { drawHistoryChart, findNearestPoint } from './chart.js';
 
+const APP_VERSION = 'v1.0.1';
+{ const v = document.getElementById('app-version'); if (v) v.textContent = 'Milestone Monitor ' + APP_VERSION; }
+
 const AUTO_REFRESH_MS = 30 * 60 * 1000;
 
 // 仮想化パラメータ
@@ -214,10 +217,15 @@ function formatDuration(sec) {
 }
 
 function escapeHtml(str) {
-  const d = document.createElement('div');
-  d.textContent = str || '';
-  return d.innerHTML;
+  // v1.0.1: 属性値（"..."）の中でも安全に使えるよう、引用符も変換する
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
+
+// v1.0.1: href / src に入る値の検査。想定外の形式なら空にする（YouTubeの動画IDは11文字、サムネイルは i.ytimg.com のみ）
+function safeVideoId(id) { return /^[A-Za-z0-9_-]{6,20}$/.test(String(id)) ? String(id) : ''; }
+function safeThumbUrl(url) { return /^https:\/\/[A-Za-z0-9.-]*ytimg\.com\/[A-Za-z0-9_\-./]*$/.test(String(url || '')) ? String(url) : ''; }
 
 function buildCard(entry) {
   const { videoId, video, milestoneState: ms } = entry;
@@ -237,13 +245,13 @@ function buildCard(entry) {
     : `<div class="card-status-badge-placeholder"></div>`;
 
   card.innerHTML = `
-    <a class="card-thumb-link" href="https://www.youtube.com/watch?v=${videoId}" target="_blank" rel="noopener" aria-label="${escapeHtml(video.title)}をYouTubeで開く">
-      <img class="card-thumb" src="${video.thumbnail}" alt="${escapeHtml(video.title)}のサムネイル" loading="lazy">
+    <a class="card-thumb-link" href="https://www.youtube.com/watch?v=${safeVideoId(videoId)}" target="_blank" rel="noopener" aria-label="${escapeHtml(video.title)}をYouTubeで開く">
+      <img class="card-thumb" src="${safeThumbUrl(video.thumbnail)}" alt="${escapeHtml(video.title)}のサムネイル" loading="lazy">
       <span class="card-duration">${formatDuration(video.durationSec)}</span>
     </a>
     <div class="card-body">
       ${badgeHtml}
-      <div class="card-channel-tag">${channelCfg.displayName || video.channel}</div>
+      <div class="card-channel-tag">${escapeHtml(channelCfg.displayName || video.channel)}</div>
       <div class="card-title">${escapeHtml(video.title)}</div>
       <div class="card-stats-row">
         <button class="card-views-btn" data-role="toggle-chart" aria-label="推移グラフを表示・非表示">${formatViews(ms.currentViews)} 回</button>

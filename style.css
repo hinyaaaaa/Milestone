@@ -300,3 +300,6 @@ body {
 @media (display-mode: standalone) {
   #app-header { padding-top: calc(env(safe-area-inset-top, 0px) + 18px); }
 }
+
+/* v1.0.1: バージョン表示 */
+#app-version { text-align: center; font-size: 11px; letter-spacing: .04em; opacity: .45; padding: 12px 0 calc(24px + env(safe-area-inset-bottom, 0px)); }
